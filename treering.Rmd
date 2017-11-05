@@ -1,0 +1,131 @@
+---
+title: "Multilevel Modeling of Arbellay et al 2017"
+author: "Song S. Qian"
+date: "October 14, 2017"
+output: pdf_document
+---
+
+# Front Matters
+
+Function for loading/installing packages:
+```{r, prompt=TRUE}
+## load/install packages
+packages<-function(x, repos="http://cran.r-project.org", ...){
+  x<-as.character(match.call()[[2]])
+  if (!require(x,character.only=TRUE)){
+    install.packages(pkgs=x, repos=repos, ...)
+    require(x,character.only=TRUE)
+  }
+}
+```
+
+Set up working directory:
+
+```{r}
+base <- getwd()
+dataDIR <- paste(base, "data", sep="/")
+## put your data set in the Data subdirectory
+plotDIR <- paste(base, "Figs", sep="/")
+## put created figures in the Figures subdirectory
+setwd(base)
+```
+
+Load needed packages:
+```{r, include=TRUE, echo=TRUE, message=FALSE, results='hide'}
+packages(lattice)
+packages(arm)
+packages(reshape2)
+packages(tikzDevice)
+```
+
+# Reading and Processing Data
+
+```{r, tidy=TRUE}
+tp282 <- read.csv(paste(dataDIR, "ArbellayAll.csv", sep="/"))
+## removing log-values
+tp282<-tp282[,-grep("(LOG)$", names(tp282))]
+## creating events
+tp282$Events <- cut(tp282$YEAR, breaks=c(1885, 1890, 1909, 1939, 1946, 1955, 1967), label=1:6)
+tp282$trt <- 2
+tp282$trt[is.element(tp282$YEAR, c(1886,1887,1906,1907,1935,1936,1943,1944,1952,1953,1961,1962))] <- 1
+tp_melt<-melt(tp282, id.vars=c("SAMPLE","YEAR","Events","trt"))
+```
+
+# Multilevel Model
+
+Details of the model are in Qian (2016) [Environmental and Ecological Statistics with R (2nd Ed.), Chapman and Hall/CRC Press], Specifically, Section 10.3 (Multilevel ANOVA) and graphics code used here are similar to the code in Section 10.6 (Multilevel GLM).
+
+```{r, tidy=TRUE}
+tp_lmer1 <- lmer(log(value) ~ 1+(1|Events)+(1|trt)+(1|variable), data=tp_melt)
+summary(tp_lmer1) ## This model assumes additive effects for all three factors
+
+tp_melt$EvTp <- paste(tp_melt$Events, tp_melt$trt)
+tp_lmer2 <- lmer(log(value) ~ 1+(1|EvTp)+(1|variable), data=tp_melt)
+summary(tp_lmer2)
+
+tp_melt$MeEvTp <- paste(tp_melt$variable, tp_melt$Events, tp_melt$trt)
+tp_lmer3 <- lmer(log(value) ~ 1+(1|MeEvTp), data=tp_melt)
+summary(tp_lmer3) ## interactions among all three factors (implicitly)
+```
+
+# Processing output
+
+The three models all perform well.  The estimated residual variances are all close to 0.36.  Using the full model, we summarize the result graphically.
+
+```{r, tidy=TRUE}
+est <- as.data.frame(matrix(unlist(strsplit(row.names(coef(tp_lmer3)[[1]]), split=" ")), ncol=3, byrow=T))
+names(est) <- c("method", "events", "treatment")
+est$treatment<-factor(est$treatment, labels = c("after", "before"))
+est$estimate <- coef(tp_lmer3)[[1]][,1]
+est$se <- sqrt(se.fixef(tp_lmer3)^2 + se.ranef(tp_lmer3)[[1]][,1]^2)
+est$se2 <- se.ranef(tp_lmer3)[[1]][,1]
+```
+
+## Plotting results 
+The function `my.panel` is written to add CIs to the estimated effects.
+```{r, tidy=TRUE, fig.align='center', fig.width=7.5, fig.height=3.5}
+my.panel <- function(x, y, subscripts, group.number, col, pch, se, ...){
+    myjitter <- c(-0.1,0.1)
+    panel.dotplot(x,as.numeric(y)+myjitter[group.number],
+                  cex=0.5, pch=pch, col=col)
+##    panel.grid()
+    panel.segments(est$estimate[subscripts]-est$se2[subscripts]*2,
+                   as.numeric(y)+myjitter[group.number],
+                   est$estimate[subscripts]+est$se2[subscripts]*2,
+                   as.numeric(y)+myjitter[group.number],
+                   col=col, 
+                   pch=pch)
+}
+est_low<-tapply(est$estimate-2*est$se2, est$method, min)
+est_up <- tapply(est$estimate+2*est$se2, est$method, max)
+est_range <- rbind(est_low, est_up)
+
+##trellis.device(pdf, file=paste(plotDIR, "compareCL.pdf", sep="/"), height=3.5, width=7.5, color = T)
+key <- simpleKey(levels(est$treatment), space="right")
+dotplot(events~estimate|method, data=est,
+        key=key, 
+        groups=treatment,
+        col=key$points$col,
+        pch=key$points$pch,
+        layout=c(4,1),
+        scales=list(x=list(relation="free")),
+        panel=my.panel, xlab="log effects", ylab="events",
+##        scales=list(x=list(alternating=T)),
+        xlim=list(est_range[,1], est_range[,2], est_range[,3], est_range[,4]))
+##dev.off()
+##trellis.device(pdf, file=paste(plotDIR, "compareBW.pdf", sep="/"), height=3.5, width=7.5, color=F)
+
+key <- simpleKey(levels(est$treatment), space="right")
+key$points$pch=c(1,4)
+dotplot(events~estimate|method, data=est,
+        key=key,
+        groups=treatment,
+        col=key$points$col,
+        pch=key$points$pch,
+        layout=c(4,1),
+        scales=list(x=list(relation="free")),
+        panel=my.panel, xlab="log effects", ylab="events",
+##        scales=list(x=list(alternating=T)),
+        xlim=list(est_range[,1], est_range[,2], est_range[,3], est_range[,4]))
+##dev.off()
+```
